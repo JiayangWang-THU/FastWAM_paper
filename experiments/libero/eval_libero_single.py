@@ -276,7 +276,20 @@ def _denormalize_action(action: torch.Tensor, processor: FastWAMProcessor) -> np
 
 
 def _get_num_video_frames(cfg: DictConfig) -> int:
-    return (int(cfg.data.train.num_frames) - 1) // int(cfg.data.train.action_video_freq_ratio) + 1
+    explicit_num_video_frames = cfg.EVALUATION.get("num_video_frames", None)
+    if explicit_num_video_frames is not None:
+        num_video_frames = int(explicit_num_video_frames)
+    else:
+        num_video_frames = (int(cfg.data.train.num_frames) - 1) // int(cfg.data.train.action_video_freq_ratio) + 1
+
+    if num_video_frames <= 0:
+        raise ValueError(f"EVALUATION.num_video_frames must be positive, got {num_video_frames}")
+    if num_video_frames % 4 != 1:
+        raise ValueError(
+            "EVALUATION.num_video_frames must satisfy T % 4 == 1 for Wan/FastWAM models, "
+            f"got {num_video_frames}."
+        )
+    return num_video_frames
 
 
 def _validate_visualize_future_video_cfg(cfg: DictConfig) -> None:
@@ -409,6 +422,10 @@ def _predict_action_chunk(
         infer_kwargs["num_video_frames"] = _get_num_video_frames(cfg)
     elif "num_video_frames" in inspect.signature(model.infer_action).parameters:
         infer_kwargs["num_video_frames"] = _get_num_video_frames(cfg)
+    if "test_action_with_infer_action" in inspect.signature(model.infer_joint).parameters:
+        infer_kwargs["test_action_with_infer_action"] = bool(
+            cfg.EVALUATION.get("test_action_with_infer_action", False)
+        )
 
     with torch.no_grad():
         if visualize_future_video:

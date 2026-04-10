@@ -1,0 +1,79 @@
+\documentclass[11pt]{article}
+\usepackage[UTF8]{ctex}
+\usepackage{amsmath,amssymb,booktabs,geometry}
+\geometry{a4paper,margin=1in}
+
+\title{ADG-WAM Demo 摘要（基于 FastWAM 的自适应 Dream 机制）}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{核心动机}
+Fast-WAM 表明：WAM 的主要收益很可能来自训练阶段的视频共训练，而不一定来自测试时显式未来视频生成。
+基于这一点，ADG-WAM 进一步提出：显式 dream 不应被固定、统一、始终启用，而应当按需触发、按任务选择 horizon，并按可信度加权使用。
+
+\section{方法概述}
+给定当前观测 $o_t$ 与指令 $l$，先由 world encoder 得到 latent 表示 $z_t$，再由两级门控控制 dream：
+\begin{align}
+(g_t, T_t) &= G_u(z_t, l), \\
+\hat d_t &= G_d(z_t, l, T_t), \\
+ c_t &= G_c(z_t, \hat d_t, l), \\
+\tilde z_t &= \Phi(z_t, \hat d_t, c_t), \\
+ a_{t:t+H-1} &\sim \pi_\theta(\tilde z_t).
+\end{align}
+其中：
+\begin{itemize}
+  \item $G_u$：Dream Usage \& Horizon Gate（决定是否 dream 以及 dream 多远）；
+  \item $G_d$：Dream Generator（Residual Dream 或 Keyframe Dream）；
+  \item $G_c$：Dream Critic（评估 dream 可信度并控制融合强度）。
+\end{itemize}
+当 $g_t=0$ 时，模型退化为 Fast-WAM 的低成本单次前向接口。
+
+\section{轻量 Dream 形式}
+\subsection{Residual Dream}
+仅预测未来状态增量而非完整未来轨迹：
+\begin{equation}
+\Delta z_{t\rightarrow t+\tau} = G_d^{res}(z_t, l, \tau), \quad
+\hat z_{t+\tau}=z_t+\Delta z_{t\rightarrow t+\tau}.
+\end{equation}
+优点是成本低、误差累积弱。
+
+\subsection{Keyframe Dream}
+只预测稀疏关键时刻 latent：
+\begin{equation}
+\hat z_{t+\kappa_k}=G_d^{key}(z_t,l,\kappa_k),\quad k=1,\dots,K.
+\end{equation}
+优点是更适配长程任务中的阶段性状态转移。
+
+\section{训练目标}
+总体损失：
+\begin{equation}
+\mathcal L = \mathcal L_{act} + \lambda_{vid}\mathcal L_{vid} + \lambda_{gate}\mathcal L_{gate}
++ \lambda_{dream}\mathcal L_{dream} + \lambda_{crit}\mathcal L_{crit}.
+\end{equation}
+其中：
+\begin{itemize}
+  \item $\mathcal L_{act}$：动作生成损失（沿用 Fast-WAM/ActionDiT）；
+  \item $\mathcal L_{vid}$：视频共训练损失（保留 world modeling 信号）；
+  \item $\mathcal L_{gate}$：使用决策与 horizon 监督（BCE+CE 或弱监督+预算正则）；
+  \item $\mathcal L_{dream}$：Residual/Keyframe dream 监督；
+  \item $\mathcal L_{crit}$：critic 对离线教师分数的蒸馏。
+\end{itemize}
+
+\section{实验设计（Demo 版）}
+重点回答四个问题：
+\begin{enumerate}
+  \item 固定 horizon 是否在任务异质性下失配；
+  \item 自适应 gate 是否提升低数据效率；
+  \item Residual/Keyframe 是否优于完整逐帧 dream 的性价比；
+  \item 在收益相近时能否保持接近 Fast-WAM 的推理成本。
+\end{enumerate}
+建议优先在 LIBERO 做 10\%/25\%/50\%/100\% 数据比例实验，再扩展 RoboTwin。
+
+\section{预期结论}
+ADG-WAM 预期将“是否 dream”升级为“何时 dream、dream 多远、dream 是否可信”的统一建模问题：
+在尽量保持 Fast-WAM 低延迟接口的前提下，提高低数据与长程任务中的 world representation 利用效率。
+
+\end{document}
