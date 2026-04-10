@@ -24,6 +24,29 @@ def parse_horizons(text: str) -> list[int]:
     return values
 
 
+def parse_suites(text: str) -> list[str]:
+    default_suites = ["libero_spatial", "libero_object", "libero_goal", "libero_long"]
+    if text is None or str(text).strip() == "":
+        return default_suites
+
+    suites = []
+    for chunk in text.split(","):
+        suite = chunk.strip()
+        if not suite:
+            continue
+        suites.append(suite)
+    if not suites:
+        return default_suites
+    return suites
+
+
+def _suite_to_manager_suite(suite: str) -> str:
+    # Keep user-facing "libero_long", map to manager benchmark key.
+    if suite == "libero_long":
+        return "libero_10"
+    return suite
+
+
 def run_cmd(cmd: list[str], dry_run: bool = False) -> None:
     print("[CMD]", " ".join(cmd))
     if dry_run:
@@ -58,6 +81,7 @@ def build_manager_cmd(
         f"EVALUATION.task_suite_name={suite}",
         f"EVALUATION.num_video_frames={horizon}",
         f"MULTIRUN.num_gpus={num_gpus}",
+        f"MULTIRUN.task_suite_names=[{_suite_to_manager_suite(suite)}]",
     ]
 
     if dream_mode == "on":
@@ -88,55 +112,64 @@ def main() -> None:
     parser.add_argument("--ckpt", required=True, help="Checkpoint path")
     parser.add_argument("--dataset-stats", required=True, help="dataset_stats.json path")
     parser.add_argument("--horizons", required=True, help="Comma-separated horizons, e.g. 5,9,13,17")
-    parser.add_argument("--suite", default="libero_spatial", help="LIBERO suite name")
+    parser.add_argument(
+        "--suites",
+        default="libero_spatial,libero_object,libero_goal,libero_long",
+        help="Comma-separated suites",
+    )
     parser.add_argument("--num-gpus", type=int, default=1)
-    parser.add_argument("--dream-mode", choices=["on", "off"], default="off")
+    parser.add_argument("--dream-mode", choices=["on", "off"], default="on")
     parser.add_argument("--output-root", default="./evaluate_results/horizon_sweep")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     horizons = parse_horizons(args.horizons)
+    suites = parse_suites(args.suites)
     output_root = Path(args.output_root).expanduser().resolve()
     output_root.mkdir(parents=True, exist_ok=True)
 
     aggregate_rows: list[dict[str, Any]] = []
 
-    for horizon in horizons:
-        run_dir = output_root / f"horizon_{horizon}"
-        run_dir.mkdir(parents=True, exist_ok=True)
+    for suite in suites:
+        print(f"[SUITE] {suite}")
+        for horizon in horizons:
+            print(f"[HORIZON] {horizon}")
+            run_dir = output_root / suite / f"horizon_{horizon}"
+            run_dir.mkdir(parents=True, exist_ok=True)
 
-        manager_cmd = build_manager_cmd(
-            task=args.task,
-            ckpt=args.ckpt,
-            dataset_stats=args.dataset_stats,
-            output_dir=run_dir,
-            num_gpus=int(args.num_gpus),
-            suite=args.suite,
-            horizon=horizon,
-            dream_mode=args.dream_mode,
-        )
-        run_cmd(manager_cmd, dry_run=args.dry_run)
+            summary_file = run_dir / "summary.json"
+            if summary_file.exists() and not args.dry_run:
+                print(f"[SKIP] Existing summary found: {summary_file}")
+            else:
+                manager_cmd = build_manager_cmd(
+                    task=args.task,
+                    ckpt=args.ckpt,
+                    dataset_stats=args.dataset_stats,
+                    output_dir=run_dir,
+                    num_gpus=int(args.num_gpus),
+                    suite=suite,
+                    horizon=horizon,
+                    dream_mode=args.dream_mode,
+                )
+                run_cmd(manager_cmd, dry_run=args.dry_run)
 
-        summarize_cmd = build_summarize_cmd(run_dir)
-        run_cmd(summarize_cmd, dry_run=args.dry_run)
+                summarize_cmd = build_summarize_cmd(run_dir)
+                run_cmd(summarize_cmd, dry_run=args.dry_run)
 
-        if args.dry_run:
-            continue
+            if args.dry_run:
+                continue
 
-        summary = load_summary(run_dir / "summary.json")
-        overall = summary.get("overall", {})
+            summary = load_summary(summary_file)
+            overall = summary.get("overall", {})
 
-        row = {
-            "horizon": horizon,
-            "dream_mode": args.dream_mode,
-            "suite": args.suite,
-            "average_success_rate": overall.get("average_success_rate"),
-            "average_task_time": overall.get("average_task_time"),
-            "total_time": overall.get("total_time"),
-            "average_future_video_psnr": overall.get("average_future_video_psnr", None),
-            "run_dir": str(run_dir),
-        }
-        aggregate_rows.append(row)
+            row = {
+                "suite": suite,
+                "horizon": horizon,
+                "average_success_rate": overall.get("average_success_rate"),
+                "average_task_time": overall.get("average_task_time"),
+                "run_dir": str(run_dir),
+            }
+            aggregate_rows.append(row)
 
     if args.dry_run:
         print("[DRY-RUN] Skip writing aggregate files.")
@@ -149,13 +182,10 @@ def main() -> None:
         json.dump(aggregate_rows, f, ensure_ascii=False, indent=2)
 
     fieldnames = [
-        "horizon",
-        "dream_mode",
         "suite",
+        "horizon",
         "average_success_rate",
         "average_task_time",
-        "total_time",
-        "average_future_video_psnr",
         "run_dir",
     ]
     with aggregate_csv.open("w", encoding="utf-8", newline="") as f:
